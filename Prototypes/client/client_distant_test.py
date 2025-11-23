@@ -72,13 +72,24 @@ class Client:
             print(f"Erreur lors de la mise en écoute : {e}")
 
 
-
+def get_ip():
+    # On crée un socket pour tester la route vers internet
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  #AF_INET car ipv4 et SOCK_DGRAM car UDP
+    try:
+        # On fait semblant de se connecter à Google (8.8.8.8)
+        s.connect(('8.8.8.8', 1))
+        ip = s.getsockname()[0]
+    except:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
 
 # --- Programme pour tester ---
 if __name__ == "__main__":
 
     # On demande l'IP de la machine actuelle pour savoir où écouter
-    my_ip = socket.gethostbyname(socket.gethostname())
+    my_ip = get_ip()
     print(my_ip)
     #my_ip = input("Entrez l'IP de cette machine : ")
     my_port = 6000
