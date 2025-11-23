@@ -78,7 +78,9 @@ class Client:
 if __name__ == "__main__":
 
     # On demande l'IP de la machine actuelle pour savoir où écouter
-    my_ip = input("Entrez l'IP de cette machine : ")
+    my_ip = socket.gethostbyname(socket.gethostname())
+    print(my_ip)
+    #my_ip = input("Entrez l'IP de cette machine : ")
     my_port = 6000
 
     moi = Client(my_ip, my_port)
@@ -90,6 +92,6 @@ if __name__ == "__main__":
         if choix.lower() == 'o':
             target_ip = input("IP du destinataire : ")
             msg = input("Votre message : ")
-            moi.envoyer_message(target_ip, 5000, msg)
+            moi.envoyer_message(target_ip, 6000, msg)
         else:
             print("En attente de réception... (Ctrl+C pour quitter)")
