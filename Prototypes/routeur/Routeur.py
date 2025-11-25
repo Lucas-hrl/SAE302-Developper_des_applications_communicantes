@@ -56,9 +56,8 @@ class Routeur:
             print(f"Routeur actif sur {self.host}:{self.port}...")
 
             while self.running:
-                # 1. On reçoit un paquet
                 conn, addr = self.router_socket_ecoute.accept()
-                donnee = conn.recv(2048)  # On lit un peu plus large (2048)
+                donnee = conn.recv(2048)
 
                 if donnee:
                     paquet_complet = donnee.decode() #On décode le paquet
@@ -71,8 +70,31 @@ class Routeur:
                         dest_port = int(dest_port)
                         self.envoyer_message(dest_ip, dest_port, vrai_message) #le routeur transfere le message
                     else:
-                        print("[Erreur] Paquet mal formaté (pas de '|').")
+                        print("Erreur Paquet mal formaté (pas de '|').")
                 conn.close()
 
         except Exception as e:
             print(f"Erreur Routeur : {e}")
+
+def get_ip():
+    # On crée un socket pour tester la route vers internet
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  #AF_INET car ipv4 et SOCK_DGRAM car UDP
+    try:
+        # On fait semblant de se connecter à Google (8.8.8.8)
+        s.connect(('8.8.8.8', 1))
+        ip = s.getsockname()[0]
+    except:
+        ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+if __name__ == "__main__":
+    ip = get_ip()
+    # Le routeur écoute par défaut sur le port 8000
+    r = Routeur(ip, 8000)
+    r.demarrer_ecoute()
+
+    # Boucle infini pour garder le programme ouvert
+    while True:
+        pass
