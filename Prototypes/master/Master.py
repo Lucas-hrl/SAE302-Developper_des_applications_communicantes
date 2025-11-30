@@ -1,6 +1,5 @@
 import socket
 import threading
-import time
 
 
 def get_ip():
@@ -39,7 +38,7 @@ class Master:
         self.__port = port
 
     def __str__(self):
-        return f"MASTER sur : {self.host}:{self.port}"
+        return f"Master sur : {self.host}:{self.port}"
 
     def demarrer_ecoute(self):
         """Lance le thread d'écoute pour ne pas bloquer le programme"""
@@ -53,7 +52,7 @@ class Master:
             self.master_socket_ecoute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.master_socket_ecoute.bind((self.host, self.port))
             self.master_socket_ecoute.listen(5)
-            print(f"[Master] Annuaire en ligne sur {self.host}:{self.port}")
+            print(f"Master en ligne sur {self.host}:{self.port}")
 
             while self.running:
                 conn, addr = self.master_socket_ecoute.accept()
