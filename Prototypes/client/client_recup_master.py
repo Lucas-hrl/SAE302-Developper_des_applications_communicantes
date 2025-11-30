@@ -10,6 +10,7 @@ class Client:
         self.client_socket_ecoute = None  # Pour garder une trace du socket d'écoute
         self.running = False  # Pour pouvoir arrêter proprement le thread
 
+
     @property
     def host(self):
         return self.__host
