@@ -20,8 +20,7 @@ class Master:
         self.__port = port
         self.master_socket_ecoute = None
         self.running = False
-        # Cette liste stocke maintenant des triplets : (ip, port, cle_publique)
-        self.registre_routeurs = []
+        self.registrerouteurs = []  # chaque élément: (ip, port, cle)
 
     @property
     def host(self):
@@ -68,52 +67,32 @@ class Master:
         try:
             ip_source = addr[0]
             # On augmente un peu la taille du buffer (4096) car les clés peuvent être longues
-            message = conn.recv(4096).decode()
+            message = conn.recv(1024).decode("latin1")
 
-            # Un routeur veut s'inscrire
-            # Format attendu : "REGISTER|8000|e,n" (avec la clé à la fin)
             if message.startswith("REGISTER"):
-                parts = message.split("|")
-
-                # Vérification qu'on a bien les 3 parties (Header, Port, Clé)
-                if len(parts) >= 3:
-                    port_routeur = int(parts[1])
-                    cle_publique = parts[2]  # La clé sous forme "12345,67890"
-
-                    # On crée le triplet (IP, PORT, CLE)
-                    nouveau_noeud = (ip_source, port_routeur, cle_publique)
-
-                    # Vérification anti-doublon (basée sur IP et Port uniquement)
-                    existe = False
-                    for r in self.registre_routeurs:
-                        if r[0] == ip_source and r[1] == port_routeur:
-                            existe = True
-
-                    if not existe:
-                        self.registre_routeurs.append(nouveau_noeud)
-                        print(f"Routeur ajouté : {ip_source}:{port_routeur} (avec Clé)")
-                        conn.send("OK".encode())
+                try:
+                    _, port_str, cle = message.split(";")
+                    portrouteur = int(port_str)
+                    ipsource = addr[0]
+                    noeud = (ipsource, portrouteur, cle)
+                    if noeud not in self.registrerouteurs:
+                        self.registrerouteurs.append(noeud)
+                        print("Routeur ajouté :", noeud)
+                        conn.send(b"OK")
                     else:
-                        print(f"Le routeur {ip_source} est déjà inscrit.")
-                        conn.send("ALREADY_REGISTERED".encode())
-                else:
-                    print("Format REGISTER invalide (manque la clé ?)")
+                        conn.send(b"ALREADYREGISTERED")
+                except Exception as e:
+                    print("Erreur REGISTER:", e)
+                    conn.send(b"ERROR")
 
-            # Un client veut la liste des routeurs
+
             elif message == "LIST":
-                print(f"Envoi de la liste à {ip_source}")
-
-                if self.registre_routeurs:
-                    # On construit la réponse : "IP:PORT:CLE ; IP:PORT:CLE"
-                    liste_str = []
-                    for ip, port, cle in self.registre_routeurs:
-                        liste_str.append(f"{ip}:{port}:{cle}")
-
-                    reponse = ";".join(liste_str)
+                if self.registrerouteurs:
+                    reponse = ",".join(f"{ip}:{port}:{cle}" for (ip, port, cle) in self.registrerouteurs)
                 else:
-                    reponse = "vide"
+                    reponse = ""
+                conn.send(reponse.encode("latin1"))
 
-                conn.send(reponse.encode())
 
         except Exception as e:
             print(f"Erreur traitement demande : {e}")
