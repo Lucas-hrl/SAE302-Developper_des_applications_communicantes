@@ -1,5 +1,5 @@
 import sys
-from Master import Master, get_ip
+from master_crypt import Master, get_ip
 
 if __name__ == "__main__":
     # Récupérer les arguments ou utiliser les valeurs par défaut
