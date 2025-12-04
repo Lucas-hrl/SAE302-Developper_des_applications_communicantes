@@ -1,4 +1,5 @@
 import sys
+import time
 from master_crypt import Master, get_ip
 
 if __name__ == "__main__":
@@ -18,9 +19,13 @@ if __name__ == "__main__":
     master.demarrer_ecoute()
 
     # Garder le programme en vie
-    import time
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nArrêt du Master.")
+        print("\nArrêt du Master...")
+        master.running = False
+        # Fermer le socket pour débloquer l'accept()
+        if master.master_socket_ecoute:
+            master.master_socket_ecoute.close()
+        print("Master arrêté.")
