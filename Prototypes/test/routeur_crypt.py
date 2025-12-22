@@ -1,8 +1,13 @@
+"""
+Définition de la classe Routeur.
+Note : Nous utilisons ici un chiffrement symétrique (XOR) via la classe CryptoSym.
+Le routeur génère sa clé au démarrage et l'envoie au Master.
+"""
+
 import socket
 import threading
-import time
-from crypt import  CryptoSym
-
+import sys
+from crypt import CryptoSym
 
 class Routeur:
     def __init__(self, host: str, port: int):
@@ -10,9 +15,13 @@ class Routeur:
         self.__port = port
         self.router_socket_ecoute = None
         self.running = False
-        self.cle_publique = None
-        self.cle_privee = None
 
+        # Gestion de la cryptographie
+        # On utilise une seule clé car c'est du symétrique (CryptoSym)
+        self.crypto = None
+        self.cle = None
+
+    # --- Getters / Setters ---
     @property
     def host(self):
         return self.__host
@@ -21,94 +30,111 @@ class Routeur:
     def port(self):
         return self.__port
 
-    @host.setter
-    def host(self, host: str):
-        self.__host = host
-
-    @port.setter
-    def port(self, port: int):
-        self.__port = port
-
-    def __str__(self):
-        return f"Le Routeur est sur l'IP : {self.host}, il écoute sur le port : {self.port}"
-
     def envoyer_message(self, ip_dist: str, port_dist: int, message: bytes) -> bool:
         """
-        Envoie des bytes vers ip_dist:port_dist.
-        Le 'message' ici est le reste du paquet (encore chiffré ou message final).
+        Transfère le paquet au noeud suivant
+        On ouvre un socket temporaire juste pour l'envoi
         """
+        socket_envoi = None
         try:
             socket_envoi = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             socket_envoi.connect((ip_dist, port_dist))
 
-            print(f"Transfert vers {ip_dist}:{port_dist}")
+            print(f"Transfert du paquet vers {ip_dist}:{port_dist}")
             socket_envoi.sendall(message)
-            socket_envoi.close()
             return True
         except ConnectionRefusedError:
-            print(f"Erreur Impossible de transférer à {ip_dist}:{port_dist}")
+            print(f"Erreur : Impossible de joindre {ip_dist}:{port_dist}")
             return False
+        except Exception as e:
+            print(f"Erreur technique envoi : {e}")
+            return False
+        finally:
+            if socket_envoi:
+                socket_envoi.close()
 
     def demarrer_ecoute(self):
-        """Lance le thread d'écoute"""
-
-
+        """Lance le serveur d'écoute dans un thread dédié"""
         self.running = True
         thread = threading.Thread(target=self.boucleecoute)
         thread.start()
 
     def boucleecoute(self):
         """
-        Logique:
-        - reçoit des bytes
-        - déchiffre avec self.crypto
-        - attend un format "ip;port;reste"
-          * si ip et port non vides -> transfert à ip:port avec 'reste' comme bytes
-          * sinon -> on considère que c'est le destinataire final et on affiche le message
+        Boucle principale du serveur
+        Attend les connexions et lance un thread par message reçu
         """
         try:
             self.router_socket_ecoute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Option pour pouvoir relancer le script sans attendre le timeout système du port
+            self.router_socket_ecoute.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
             self.router_socket_ecoute.bind((self.host, self.port))
             self.router_socket_ecoute.listen(5)
-            print("Routeur actif sur", self.host, self.port, "...")
+
+            # Le print est commenté pour ne pas polluer la console du script de lancement
+            # print(f"Routeur en écoute sur {self.host}:{self.port}")
 
             while self.running:
-                conn, addr = self.router_socket_ecoute.accept()
-                donnees = conn.recv(2048)
-                if donnees:
-                    # 1) déchiffrer avec la clé de ce routeur
-                    texte = self.crypto.dechiffrer(donnees)
-                    print("Paquet déchiffré reçu de", addr, ":", texte)
+                try:
+                    conn, addr = self.router_socket_ecoute.accept()
+                    # Gestion multi-thread pour ne pas bloquer les autres paquets
+                    threading.Thread(target=self._traiter_connexion, args=(conn, addr)).start()
+                except OSError:
+                    break
 
-                    # 2) essayer de parser "ip;port;reste"
-                    parties = texte.split(";", 2)
-                    if len(parties) == 3:
-                        ipdest, portdest_str, reste = parties
-
-                        ipdest = ipdest.strip()
-                        portdest_str = portdest_str.strip()
-
-                        if ipdest and portdest_str:
-                            # encore un saut à faire
-                            portdest = int(portdest_str)
-                            # 'reste' doit redevenir des bytes pour le prochain
-                            reste_bytes = reste.encode("latin1")
-                            self.envoyer_message(ipdest, portdest, reste_bytes)
-                        else:
-                            # pas d'ip / port -> on est le destinataire final
-                            print("Message final arrivé à ce routeur :", reste)
-                    else:
-                        print("Format inconnu après déchiffrement:", texte)
-                conn.close()
         except Exception as e:
-            print("Erreur :", e)
+            print("Erreur Serveur :", e)
+        finally:
+            if self.router_socket_ecoute:
+                self.router_socket_ecoute.close()
 
+    def _traiter_connexion(self, conn, addr):
+        """
+        Logique de traitement Oignon :
+        1. On reçoit
+        2. On déchiffre avec notre clé symétrique
+        3. On lit l'entête (IP;PORT)
+        4. On transmet le reste
+        """
+        try:
+            donnees = conn.recv(4096)
+            if donnees:
+                # Déchiffrement (Symétrique XOR)
+                texte = self.crypto.dechiffrer(donnees)
+                print(f"[Recu] Paquet de {addr}")
+
+                # IP;PORT;PAYLOAD
+                # Le payload peut contenir des ';', donc on limite le split à 2
+                parties = texte.split(";", 2)
+
+                if len(parties) == 3:
+                    ipdest, portdest_str, reste = parties
+                    ipdest = ipdest.strip()
+                    portdest_str = portdest_str.strip()
+
+                    if ipdest and portdest_str:
+                        # Cas Relai : On transmet au suivant
+                        portdest = int(portdest_str)
+                        # On ré-encode en bytes car 'envoyer_message' attend des bytes
+                        reste_bytes = reste.encode("latin1")
+                        self.envoyer_message(ipdest, portdest, reste_bytes)
+                    else:
+                        # Cas Final : IP/Port vides, c'est pour nous
+                        print(f"Message final déchiffré : {reste}")
+                else:
+                    print("Erreur : Format de paquet invalide.")
+        except Exception as e:
+            print(f"Erreur traitement : {e}")
+        finally:
+            conn.close()
+
+# --- Fonctions Utilitaires ---
 
 def get_ip():
-    # On crée un socket pour tester la route vers internet
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # AF_INET car ipv4 et SOCK_DGRAM car UDP
+    """Récupère l'ip de la machine (ex: 192.168.x.x)"""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # On fait semblant de se connecter à Google (8.8.8.8)
         s.connect(('8.8.8.8', 1))
         ip = s.getsockname()[0]
     except:
@@ -117,38 +143,54 @@ def get_ip():
         s.close()
     return ip
 
-
 def sinscrireaumaster(ipmaster, portmaster, monport, cle):
+    """Envoie REGISTER au Master avec la clé symétrique"""
+    s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((ipmaster, portmaster))
+
         msg = f"REGISTER;{monport};{cle}"
         s.send(msg.encode("latin1"))
-        reponse = s.recv(1024).decode("latin1")
-        print("Master - Réponse inscription :", reponse)
-        s.close()
+
+        # On lit juste la confirmation pour être sûr que c'est bon
+        s.recv(1024)
     except Exception as e:
-        print("Erreur : Impossible de contacter le Master", e)
+        print(f"Erreur inscription Master ({ipmaster}): {e}")
+    finally:
+        if s: s.close()
 
-
-
+# --- Main (Exécution manuelle) ---
 if __name__ == "__main__":
-    ip = get_ip()
-    portecoute = 8000
-    r = Routeur(ip, portecoute)
+    # Vérification des arguments pour éviter les erreurs de lancement
+    if len(sys.argv) < 4:
+        print("Usage : python routeur_crypt.py <IP_MASTER> <PORT_MASTER> <PORT_ROUTEUR>")
+        sys.exit(1)
 
-    # Créer l’objet de chiffrement + clé aléatoire
+    ip_master = sys.argv[1]
+    port_master = int(sys.argv[2])
+    mon_port = int(sys.argv[3])
+    mon_ip = get_ip()
+
+    # Initialisation du routeur
+    r = Routeur(mon_ip, mon_port)
+
+    # Génération de la clé unique (Symétrique)
     r.crypto = CryptoSym()
-    cle_routeur = r.crypto.get_cle()
-    print("Clé de ce routeur :", cle_routeur)
+    r.cle = r.crypto.get_cle()
+
+    print(f"Routeur manuel lancé sur {mon_ip}:{mon_port}")
+    print(f"Clé symétrique : {r.cle}")
 
     r.demarrer_ecoute()
 
-    print("--- Inscription master ---")
-    ipmaster = input("Entrez l'IP du master : ")
-    portmaster = 9016
-    sinscrireaumaster(ipmaster, portmaster, portecoute, cle_routeur)
+    # Inscription au Master pour qu'il connaisse notre clé
+    sinscrireaumaster(ip_master, port_master, mon_port, r.cle)
 
-    import time
-    while True:
-        time.sleep(1)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        r.running = False
+        if r.router_socket_ecoute:
+            r.router_socket_ecoute.close()
