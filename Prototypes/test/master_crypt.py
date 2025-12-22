@@ -1,17 +1,27 @@
+"""
+Description :
+Ce script est le serveur central (Annuaire).
+- Il gère une base de données MariaDB pour stocker la liste des routeurs actifs.
+- Il répond aux routeurs qui s'inscrivent (REGISTER).
+- Il répond aux clients qui cherchent des noeuds (LIST).
+- Il est multithreadé pour gérer plusieurs demandes en même temps.
+"""
+
 import socket
 import threading
 import time
 import sys
 import mysql.connector
 
-# --- CONFIGURATION MARIADB ---
-# À modifier selon ton installation (WAMP/XAMPP mettent souvent root/vide par défaut)
+# --- CONFIGURATION MARIADB STANDARD ---
+# Configuration par défaut
 DB_HOST = "localhost"
 DB_USER = "root"
 DB_PASS = ""
 
 
 def get_ip():
+    """Petite fonction pour récupérer l'adresse IP LAN de la machine."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 1))
@@ -29,14 +39,13 @@ class Master:
         self.master_socket_ecoute = None
         self.running = False
 
-        # NOTE: On remplace la liste 'self.registrerouteurs' par la BDD MariaDB
-        # self.registrerouteurs = []  <-- Ancienne version mémoire
-
-        # Sémaphore pour gérer l'accès concurrent à la base de données (Cours p.48)
-        # Permet d'éviter que deux threads écrivent en même temps (Mutex)
+        # Sémaphore pour la BDD :
+        # Comme on est en multithreading (plusieurs routeurs peuvent s'inscrire en même temps),
+        # on utilise un sémaphore (ou Mutex) pour qu'un seul thread écrive dans la BDD à la fois.
+        # Cela évite les conflits et les crashs SQL.
         self.sem_bdd = threading.Semaphore(1)
 
-        # Initialisation automatique : Crée la BDD et la Table au démarrage
+        # Au démarrage, on vérifie que la BDD existe, sinon on la crée.
         self._preparer_base_de_donnees()
 
     @property
@@ -47,25 +56,15 @@ class Master:
     def port(self):
         return self.__port
 
-    @host.setter
-    def host(self, host: str):
-        self.__host = host
-
-    @port.setter
-    def port(self, port: int):
-        self.__port = port
-
-    def __str__(self):
-        return f"Master sur : {self.host}:{self.port}"
-
     def _preparer_base_de_donnees(self):
         """
-        Crée la base de données 'projet_tor' et la table 'routeurs' si elles n'existent pas.
-        Rend le code portable et facilite l'installation.
+        Initialisation automatique de l'environnement SQL.
+        Permet de rendre le projet portable : pas besoin d'importer un fichier .sql manuellement.
         """
-        print("--- Vérification/Installation de la BDD MariaDB ---")
+        print("--- Initialisation de la Base de Données ---")
+        conn = None
         try:
-            # 1. Connexion au serveur SANS préciser de base (pour pouvoir la créer)
+            # 1. Connexion au serveur sans préciser de base (car elle n'existe peut-être pas encore)
             conn = mysql.connector.connect(
                 host=DB_HOST,
                 user=DB_USER,
@@ -73,13 +72,14 @@ class Master:
             )
             cursor = conn.cursor()
 
-            # 2. Création de la base
-            cursor.execute("CREATE DATABASE IF NOT EXISTS projet_tor")
+            # 2. Création de la base 'sae_routage_oignon_lh'
+            cursor.execute("CREATE DATABASE IF NOT EXISTS sae_routage_oignon_lh")
 
-            # 3. Sélection de la base pour la suite
-            cursor.execute("USE projet_tor")
+            # 3. On rentre dans la base
+            cursor.execute("USE sae_routage_oignon_lh")
 
-            # 4. Création de la table avec les champs nécessaires
+            # 4. Création de la table 'routeurs'
+            # On stocke l'IP, le Port et la Clé (nécessaire pour le chiffrement oignon)
             cursor.execute("""
                            CREATE TABLE IF NOT EXISTS routeurs
                            (
@@ -97,105 +97,117 @@ class Master:
                                cle TEXT
                                )
                            """)
-            print(">> Base de données prête.")
-            conn.close()
+
+            # OPTIONNEL : On vide la table au lancement pour éviter d'avoir des routeurs "fantômes"
+            # d'une session précédente qui n'existent plus.
+            cursor.execute("TRUNCATE TABLE routeurs")
+
+            print("BDD 'sae_routage_oignon_lh' et table 'routeurs' prêtes.")
+            conn.commit()
 
         except mysql.connector.Error as err:
-            print(f"ERREUR CRITIQUE MARIADB : {err}")
-            print("Vérifiez que le service SQL (XAMPP/WAMP) est bien lancé.")
-            sys.exit(1)
+            print(f"ERREUR CRITIQUE SQL : {err}")
+            print("Vérifiez que MariaDB est lancé et que l'user est bien 'root' sans mot de passe.")
+            sys.exit(1)  # On arrête tout si pas de BDD
+        finally:
+            if conn: conn.close()
 
     def _get_db_connection(self):
-        """Helper pour obtenir une connexion vers la base 'projet_tor'"""
+        """Fonction utilitaire pour récupérer une connexion propre vers la base sae_routage_oignon_lh"""
         return mysql.connector.connect(
-            host=DB_HOST, user=DB_USER, password=DB_PASS, database="projet_tor"
+            host=DB_HOST, user=DB_USER, password=DB_PASS, database="sae_routage_oignon_lh"
         )
 
     def demarrer_ecoute(self):
-        """Lance le thread d'écoute pour ne pas bloquer le programme"""
+        """Lance le thread principal du serveur"""
         self.running = True
+        # On utilise un thread pour ne pas bloquer le terminal
         thread = threading.Thread(target=self._boucle_ecoute)
         thread.start()
 
     def _boucle_ecoute(self):
-        """Boucle principale qui attend les connexions"""
+        """Boucle d'attente des connexions (TCP)"""
         try:
             self.master_socket_ecoute = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            # Option pour réutiliser le port rapidement si on relance le script
+            # Permet de relancer le Master immédiatement sans attendre le timeout du port
             self.master_socket_ecoute.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
             self.master_socket_ecoute.bind((self.host, self.port))
-            self.master_socket_ecoute.listen(5)
-            print(f"Master en ligne sur {self.host}:{self.port}")
+            self.master_socket_ecoute.listen(10)  # File d'attente
+            print(f"Master en écoute sur {self.host}:{self.port}")
 
             while self.running:
                 try:
+                    # accept() est bloquant, on attend un client
                     conn, addr = self.master_socket_ecoute.accept()
-                    # Gestion multi-thread des demandes (Cours p.39)
+                    # À chaque client, on lance un thread dédié pour traiter sa demande
                     threading.Thread(target=self._traiter_demande, args=(conn, addr)).start()
                 except OSError:
-                    break  # Interruption propre
+                    break  # On sort proprement si le socket est fermé
 
         except Exception as e:
-            print(f"Erreur Master : {e}")
+            print(f"Erreur Serveur Master : {e}")
         finally:
             if self.master_socket_ecoute:
                 self.master_socket_ecoute.close()
 
     def _traiter_demande(self, conn, addr):
-        """Analyse le message avec gestion des CLÉS PUBLIQUES et MARIADB"""
+        """
+        Traite les messages reçus :
+        - REGISTER : Un routeur s'inscrit
+        - LIST : Un client demande la liste
+        """
         try:
-            ip_source = addr[0]
-            # On augmente un peu la taille du buffer (4096) car les clés peuvent être longues
-            message = conn.recv(4096).decode("latin1")
+            # On lit le message (buffer large pour la clé)
+            data = conn.recv(4096).decode("latin1")
 
-            if message.startswith("REGISTER"):
+            if not data: return
+
+            # cas 1 : Inscription d'un routeur
+            if data.startswith("REGISTER"):
                 try:
-                    _, port_str, cle = message.split(";")
-                    portrouteur = int(port_str)
-                    ipsource = addr[0]
+                    # Format : REGISTER;PORT;CLE
+                    parts = data.split(";")
+                    port_routeur = int(parts[1])
+                    cle_routeur = parts[2]
+                    ip_routeur = addr[0]  # On prend l'IP réelle de la connexion
 
-                    # --- DÉBUT SECTION CRITIQUE (Sémaphore) ---
-                    # On verrouille l'accès à la BDD pour éviter les conflits d'écriture
+                    # Accès BDD
                     self.sem_bdd.acquire()
                     db = None
                     try:
                         db = self._get_db_connection()
                         cursor = db.cursor()
 
-                        # Vérification si le routeur existe déjà
-                        cursor.execute("SELECT id FROM routeurs WHERE ip=%s AND port=%s", (ipsource, portrouteur))
-                        exist = cursor.fetchone()
+                        # On regarde si ce routeur existe déjà (IP + Port)
+                        cursor.execute("SELECT id FROM routeurs WHERE ip=%s AND port=%s", (ip_routeur, port_routeur))
+                        existe = cursor.fetchone()
 
-                        if not exist:
-                            # Insertion du nouveau routeur
+                        if not existe:
                             cursor.execute("INSERT INTO routeurs (ip, port, cle) VALUES (%s, %s, %s)",
-                                           (ipsource, portrouteur, cle))
+                                           (ip_routeur, port_routeur, cle_routeur))
                             db.commit()
-                            print("Routeur ajouté en BDD :", (ipsource, portrouteur))
+                            print(f"Nouveau routeur inscrit : {ip_routeur}:{port_routeur}")
                             conn.send(b"OK")
                         else:
-                            # Mise à jour de la clé (au cas où il a redémarré)
-                            cursor.execute("UPDATE routeurs SET cle=%s WHERE id=%s", (cle, exist[0]))
+                            # S'il existe, on met à jour sa clé (cas de redémarrage)
+                            cursor.execute("UPDATE routeurs SET cle=%s WHERE id=%s", (cle_routeur, existe[0]))
                             db.commit()
-                            conn.send(b"ALREADYREGISTERED")
+                            print(f"Routeur mis à jour : {ip_routeur}:{port_routeur}")
+                            conn.send(b"UPDATED")
 
                     except mysql.connector.Error as e:
-                        print("Erreur SQL REGISTER:", e)
-                        conn.send(b"ERROR")
+                        print(f"Erreur SQL : {e}")
                     finally:
                         if db: db.close()
-                        self.sem_bdd.release()  # Toujours libérer le sémaphore
-                    # --- FIN SECTION CRITIQUE ---
+                        self.sem_bdd.release()  # IMPORTANT : Toujours libérer le sémaphore
 
                 except Exception as e:
-                    print("Erreur REGISTER:", e)
-                    conn.send(b"ERROR")
+                    print(f"Erreur protocole REGISTER : {e}")
 
-
-            elif message == "LIST":
-                # --- DÉBUT SECTION CRITIQUE (Sémaphore) ---
-                # On protège aussi la lecture pour avoir une liste cohérente
+            # cas 2 : Demande de la liste par un client
+            elif data == "LIST":
+                # Lecture BDD
                 self.sem_bdd.acquire()
                 db = None
                 try:
@@ -206,40 +218,45 @@ class Master:
                     lignes = cursor.fetchall()
 
                     if lignes:
-                        # On reconstruit la chaine pour le client : ip:port:cle,ip:port:cle
-                        reponse = ",".join(f"{r[0]}:{r[1]}:{r[2]}" for r in lignes)
+                        # On formate la réponse : ip:port:cle,ip:port:cle...
+                        liste_str = ",".join([f"{r[0]}:{r[1]}:{r[2]}" for r in lignes])
+                        conn.send(liste_str.encode("latin1"))
+                        print(f"[?] Liste envoyée à {addr[0]} ({len(lignes)} routeurs)")
                     else:
-                        reponse = "EMPTY"
-
-                    conn.send(reponse.encode("latin1"))
+                        conn.send(b"EMPTY")
 
                 except Exception as e:
-                    print(f"Erreur LIST : {e}")
-                    conn.send(b"ERROR")
+                    print(f"Erreur SQL LIST : {e}")
                 finally:
                     if db: db.close()
                     self.sem_bdd.release()
-                # --- FIN SECTION CRITIQUE ---
 
         except Exception as e:
-            print(f"Erreur traitement demande : {e}")
+            print(f"Erreur connexion client : {e}")
         finally:
             conn.close()
 
 
 if __name__ == "__main__":
-    mon_ip = get_ip()
-    mon_port = 9016
+    # Ce bloc ne s'exécute que si on lance ce fichier directement (sans le script de lancement)
+    # C'est une sécurité pour que le fichier soit autonome
 
-    master = Master(mon_ip, mon_port)
+    print("ATTENTION : Lancement manuel du Master !!!")
+    print("Pour plus d'options, utilisez : python lancer_master.py")
+
+    # On prend des valeurs par défaut simples
+    ip_defaut = get_ip()
+    port_defaut = 9016
+
+    print(f"--- Démarrage Master sur {ip_defaut}:{port_defaut} ---")
+
+    master = Master(ip_defaut, port_defaut)
     master.demarrer_ecoute()
 
-    # Boucle infinie pour garder le programme ouvert
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nArrêt du Master...")
         master.running = False
         if master.master_socket_ecoute:
             master.master_socket_ecoute.close()
