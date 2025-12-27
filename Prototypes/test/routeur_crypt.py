@@ -45,6 +45,7 @@ class Routeur:
             return True
         except ConnectionRefusedError:
             print(f"Erreur : Impossible de joindre {ip_dist}:{port_dist}")
+            self.signaler_panne(ip_dist, port_dist)
             return False
         except Exception as e:
             print(f"Erreur technique envoi : {e}")
@@ -56,10 +57,26 @@ class Routeur:
     def demarrer_ecoute(self):
         """Lance le serveur d'écoute dans un thread dédié"""
         self.running = True
-        thread = threading.Thread(target=self.boucleecoute)
+        thread = threading.Thread(target=self.boucle_ecoute)
         thread.start()
 
-    def boucleecoute(self):
+    def set_master_info(self, ip, port):
+        self.master_ip = ip
+        self.master_port = port
+
+    def signaler_panne(self, ip_hs, port_hs):
+        if not hasattr(self, 'master_ip'): return
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((self.master_ip, self.master_port))
+            msg = f"REPORT_DOWN;{ip_hs};{port_hs}"
+            s.send(msg.encode("latin1"))
+            s.close()
+            print(f"[!] Panne signalée au Master pour {ip_hs}:{port_hs}")
+        except:
+            pass
+
+    def boucle_ecoute(self):
         """
         Boucle principale du serveur
         Attend les connexions et lance un thread par message reçu
@@ -69,7 +86,7 @@ class Routeur:
             # Option pour pouvoir relancer le script sans attendre le timeout système du port
             self.router_socket_ecoute.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            self.router_socket_ecoute.bind((self.host, self.port))
+            self.router_socket_ecoute.bind(("0.0.0.0", self.port))
             self.router_socket_ecoute.listen(5)
 
             # Le print est commenté pour ne pas polluer la console du script de lancement
@@ -143,7 +160,7 @@ def get_ip():
         s.close()
     return ip
 
-def sinscrireaumaster(ipmaster, portmaster, monport, cle):
+def s_inscrire_au_master(ipmaster, portmaster, monport, cle):
     """Envoie REGISTER au Master avec la clé symétrique"""
     s = None
     try:
@@ -157,8 +174,10 @@ def sinscrireaumaster(ipmaster, portmaster, monport, cle):
         s.recv(1024)
     except Exception as e:
         print(f"Erreur inscription Master ({ipmaster}): {e}")
+        return False
     finally:
         if s: s.close()
+    return True
 
 # --- Main (Exécution manuelle) ---
 if __name__ == "__main__":
@@ -185,7 +204,10 @@ if __name__ == "__main__":
     r.demarrer_ecoute()
 
     # Inscription au Master pour qu'il connaisse notre clé
-    sinscrireaumaster(ip_master, port_master, mon_port, r.cle)
+    s_inscrire_au_master(ip_master, port_master, mon_port, r.cle)
+    
+    # On sauvegarde les infos du Master pour pouvoir signaler les pannes plus tard
+    r.set_master_info(ip_master, port_master)
 
     try:
         while True:
