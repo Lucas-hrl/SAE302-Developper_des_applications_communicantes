@@ -12,9 +12,12 @@ class CryptoSym:
     @staticmethod
     def generer_cle(longueur):
         caracteres = []
-        for _ in range(longueur):
+        while len(caracteres) < longueur:
             code_ascii = random.randint(33, 126)
-            caracteres.append(chr(code_ascii))
+            c = chr(code_ascii)
+            # On exclut les séparateurs utilisés dans le protocole (;, :) et le CSV (,)
+            if c not in [';', ':', ',']:
+                caracteres.append(c)
         return "".join(caracteres)
 
     def get_cle(self):
