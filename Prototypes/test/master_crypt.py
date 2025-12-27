@@ -15,9 +15,10 @@ import mysql.connector
 
 # --- CONFIGURATION MARIADB STANDARD ---
 # Configuration par défaut
+# En haut du fichier master_crypt.py, après les imports :
 DB_HOST = "localhost"
-DB_USER = "root"
-DB_PASS = ""
+DB_USER = "sae"
+DB_PASS = "sae"  # Vide pour root par défaut
 
 
 def get_ip():
@@ -56,74 +57,110 @@ class Master:
     def port(self):
         return self.__port
 
+    # --------- PARTIE BDD ---------
+
     def _preparer_base_de_donnees(self):
-        """
-        Initialisation automatique de l'environnement SQL.
-        Permet de rendre le projet portable : pas besoin d'importer un fichier .sql manuellement.
-        """
-        print("--- Initialisation de la Base de Données ---")
-        conn = None
+        print("--- Initialisation BDD ---")
         try:
-            # 1. Connexion au serveur sans préciser de base (car elle n'existe peut-être pas encore)
-            conn = mysql.connector.connect(
-                host=DB_HOST,
-                user=DB_USER,
-                password=DB_PASS
+            # Test connexion d'abord
+            test_conn = mysql.connector.connect(
+                host=DB_HOST, user=DB_USER, password=DB_PASS
             )
+            test_conn.close()
+            print("Connexion MariaDB OK")
+
+            # Création BDD + tables
+            conn = mysql.connector.connect(host=DB_HOST, user=DB_USER, password=DB_PASS)
             cursor = conn.cursor()
-
-            # 2. Création de la base 'sae_routage_oignon_lh'
             cursor.execute("CREATE DATABASE IF NOT EXISTS sae_routage_oignon_lh")
-
-            # 3. On rentre dans la base
             cursor.execute("USE sae_routage_oignon_lh")
 
-            # 4. Création de la table 'routeurs'
-            # On stocke l'IP, le Port et la Clé (nécessaire pour le chiffrement oignon)
+            # Table routeurs
             cursor.execute("""
                            CREATE TABLE IF NOT EXISTS routeurs
                            (
-                               id
-                               INT
-                               AUTO_INCREMENT
-                               PRIMARY
-                               KEY,
-                               ip
-                               VARCHAR
-                           (
-                               50
-                           ),
+                               id INT AUTO_INCREMENT PRIMARY KEY,
+                               ip VARCHAR(50),
                                port INT,
-                               cle TEXT
-                               )
+                               cle TEXT,
+                               statut VARCHAR(20) DEFAULT 'ACTIVE'
+                           )
                            """)
 
-            # OPTIONNEL : On vide la table au lancement pour éviter d'avoir des routeurs "fantômes"
-            # d'une session précédente qui n'existent plus.
-            cursor.execute("TRUNCATE TABLE routeurs")
+            # NOUVELLE table logs (anonyme)
+            cursor.execute("""
+                           CREATE TABLE IF NOT EXISTS logs
+                           (
+                               id INT AUTO_INCREMENT PRIMARY KEY,
+                               evenement VARCHAR(50),
+                               ip_source VARCHAR(45),
+                               details TEXT,
+                               moment TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                           )
+                           """)
 
-            print("BDD 'sae_routage_oignon_lh' et table 'routeurs' prêtes.")
+            cursor.execute("DROP TABLE IF EXISTS routeurs") # On drop pour forcer la maj du schema
+            cursor.execute("""
+                           CREATE TABLE IF NOT EXISTS routeurs
+                           (
+                               id INT AUTO_INCREMENT PRIMARY KEY,
+                               ip VARCHAR(50),
+                               port INT,
+                               cle TEXT,
+                               statut VARCHAR(20) DEFAULT 'ACTIVE'
+                           )
+                           """)
+            cursor.execute("TRUNCATE TABLE logs")
             conn.commit()
+            print("Tables routeurs + logs créées")
+            conn.close()
 
         except mysql.connector.Error as err:
-            print(f"ERREUR CRITIQUE SQL : {err}")
-            print("Vérifiez que MariaDB est lancé et que l'user est bien 'root' sans mot de passe.")
-            sys.exit(1)  # On arrête tout si pas de BDD
-        finally:
-            if conn: conn.close()
+            print(f"Erreur MariaDB: {err}")
+            print("Solutions:")
+            print("Verifier que MariaDB est démarrée et que l'utilisateur et le mot de passe sont corrects.")
+            sys.exit(1)
 
     def _get_db_connection(self):
         """Fonction utilitaire pour récupérer une connexion propre vers la base sae_routage_oignon_lh"""
         return mysql.connector.connect(
-            host=DB_HOST, user=DB_USER, password=DB_PASS, database="sae_routage_oignon_lh"
+            host=DB_HOST,
+            user=DB_USER,
+            password=DB_PASS,
+            database="sae_routage_oignon_lh"
         )
+
+    def _log(self, evenement: str, ip_source: str, details: str, verrouiller=True):
+        """Enregistre un événement dans la table logs (journalisation anonyme)"""
+        db = None
+        try:
+            if verrouiller:
+                self.sem_bdd.acquire()
+            
+            db = self._get_db_connection()
+            cursor = db.cursor()
+            cursor.execute(
+                "INSERT INTO logs (evenement, ip_source, details) VALUES (%s, %s, %s)",
+                (evenement, ip_source, details)
+            )
+            db.commit()
+        except Exception:
+            # Les logs ne doivent jamais faire planter le Master
+            pass
+        finally:
+            if db:
+                db.close()
+            if verrouiller:
+                self.sem_bdd.release()
+
+    # --------- PARTIE RESEAU ---------
 
     def demarrer_ecoute(self):
         """Lance le thread principal du serveur"""
         self.running = True
         # On utilise un thread pour ne pas bloquer le terminal
-        thread = threading.Thread(target=self._boucle_ecoute)
-        thread.start()
+        self.thread_ecoute = threading.Thread(target=self._boucle_ecoute)
+        self.thread_ecoute.start()
 
     def _boucle_ecoute(self):
         """Boucle d'attente des connexions (TCP)"""
@@ -132,9 +169,10 @@ class Master:
             # Permet de relancer le Master immédiatement sans attendre le timeout du port
             self.master_socket_ecoute.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 
-            self.master_socket_ecoute.bind((self.host, self.port))
+            self.master_socket_ecoute.bind(("0.0.0.0", self.port))
             self.master_socket_ecoute.listen(10)  # File d'attente
             print(f"Master en écoute sur {self.host}:{self.port}")
+            self._log("DEMARRAGE_MASTER", self.host, f"port={self.port}")
 
             while self.running:
                 try:
@@ -147,6 +185,7 @@ class Master:
 
         except Exception as e:
             print(f"Erreur Serveur Master : {e}")
+            self._log("ERREUR_MASTER", self.host, f"{e}")
         finally:
             if self.master_socket_ecoute:
                 self.master_socket_ecoute.close()
@@ -161,7 +200,8 @@ class Master:
             # On lit le message (buffer large pour la clé)
             data = conn.recv(4096).decode("latin1")
 
-            if not data: return
+            if not data:
+                return
 
             # cas 1 : Inscription d'un routeur
             if data.startswith("REGISTER"):
@@ -184,26 +224,34 @@ class Master:
                         existe = cursor.fetchone()
 
                         if not existe:
-                            cursor.execute("INSERT INTO routeurs (ip, port, cle) VALUES (%s, %s, %s)",
+                            cursor.execute("INSERT INTO routeurs (ip, port, cle, statut) VALUES (%s, %s, %s, 'ACTIVE')",
                                            (ip_routeur, port_routeur, cle_routeur))
                             db.commit()
                             print(f"Nouveau routeur inscrit : {ip_routeur}:{port_routeur}")
                             conn.send(b"OK")
+                            self._log("ROUTEUR_INSCRIT", ip_routeur,
+                                      f"{ip_routeur}:{port_routeur}", verrouiller=False)
                         else:
-                            # S'il existe, on met à jour sa clé (cas de redémarrage)
-                            cursor.execute("UPDATE routeurs SET cle=%s WHERE id=%s", (cle_routeur, existe[0]))
+                            # S'il existe, on met à jour sa clé et on le réactive
+                            cursor.execute("UPDATE routeurs SET cle=%s, statut='ACTIVE' WHERE id=%s", (cle_routeur, existe[0]))
                             db.commit()
                             print(f"Routeur mis à jour : {ip_routeur}:{port_routeur}")
                             conn.send(b"UPDATED")
+                            self._log("ROUTEUR_MAJ", ip_routeur,
+                                      f"{ip_routeur}:{port_routeur}", verrouiller=False)
 
                     except mysql.connector.Error as e:
                         print(f"Erreur SQL : {e}")
+                        # On logue l'erreur SQL sans faire planter le serveur
+                        self._log("ERREUR_SQL_REGISTER", ip_routeur, str(e), verrouiller=False)
                     finally:
-                        if db: db.close()
+                        if db:
+                            db.close()
                         self.sem_bdd.release()  # IMPORTANT : Toujours libérer le sémaphore
 
                 except Exception as e:
                     print(f"Erreur protocole REGISTER : {e}")
+                    self._log("ERREUR_PROTOCOLE_REGISTER", addr[0], str(e))
 
             # cas 2 : Demande de la liste par un client
             elif data == "LIST":
@@ -214,7 +262,7 @@ class Master:
                     db = self._get_db_connection()
                     cursor = db.cursor()
 
-                    cursor.execute("SELECT ip, port, cle FROM routeurs")
+                    cursor.execute("SELECT ip, port, cle FROM routeurs WHERE statut='ACTIVE'")
                     lignes = cursor.fetchall()
 
                     if lignes:
@@ -222,17 +270,48 @@ class Master:
                         liste_str = ",".join([f"{r[0]}:{r[1]}:{r[2]}" for r in lignes])
                         conn.send(liste_str.encode("latin1"))
                         print(f"[?] Liste envoyée à {addr[0]} ({len(lignes)} routeurs)")
+                        self._log("LIST_OK", addr[0], f"{len(lignes)} routeurs", verrouiller=False)
                     else:
                         conn.send(b"EMPTY")
+                        self._log("LIST_VIDE", addr[0], "0 routeur", verrouiller=False)
 
                 except Exception as e:
                     print(f"Erreur SQL LIST : {e}")
+                    self._log("ERREUR_SQL_LIST", addr[0], str(e), verrouiller=False)
                 finally:
-                    if db: db.close()
+                    if db:
+                        db.close()
                     self.sem_bdd.release()
+            
+            # cas 3 : Signalement d'un routeur HS
+            elif data.startswith("REPORT_DOWN"):
+                try:
+                    # Format : REPORT_DOWN;IP_HS;PORT_HS
+                    parts = data.split(";")
+                    if len(parts) >= 3:
+                        ip_hs = parts[1]
+                        port_hs = int(parts[2])
+                        
+                        self.sem_bdd.acquire()
+                        db = None
+                        try:
+                            db = self._get_db_connection()
+                            cursor = db.cursor()
+                            cursor.execute("UPDATE routeurs SET statut='DOWN' WHERE ip=%s AND port=%s", (ip_hs, port_hs))
+                            db.commit()
+                            print(f"[!] Routeur signalé DOWN : {ip_hs}:{port_hs} par {addr[0]}")
+                            self._log("ROUTEUR_DOWN", addr[0], f"Cible: {ip_hs}:{port_hs}", verrouiller=False)
+                        except Exception as e:
+                            print(f"Erreur SQL REPORT_DOWN : {e}")
+                        finally:
+                            if db: db.close()
+                            self.sem_bdd.release()
+                except Exception as e:
+                    print(f"Erreur protocole REPORT_DOWN : {e}")
 
         except Exception as e:
             print(f"Erreur connexion client : {e}")
+            self._log("ERREUR_CONNEXION_CLIENT", addr[0], str(e))
         finally:
             conn.close()
 
