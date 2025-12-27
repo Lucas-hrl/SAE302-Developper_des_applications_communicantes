@@ -132,8 +132,16 @@ class ClientWindow(QMainWindow):
             self.lbl_info_routeurs.setText(f"Connecté : {nb} routeur(s) trouvés")
             self.lbl_info_routeurs.setStyleSheet("color: green; font-weight: bold;")
             self.spin_sauts.setEnabled(True)
+            
+            old_val = self.spin_sauts.value()
             self.spin_sauts.setRange(1, nb)
-            self.spin_sauts.setValue(min(2, nb))
+            
+            # On essaie de garder la valeur de l'utilisateur si elle est valide
+            if old_val > 0:
+                 self.spin_sauts.setValue(min(old_val, nb))
+            else:
+                 self.spin_sauts.setValue(min(2, nb))
+                 
             self.routeurs_found = True
         else:
             self.lbl_info_routeurs.setText("Connecté mais 0 routeur disponible")
@@ -241,10 +249,10 @@ class ClientWindow(QMainWindow):
         except ValueError:
             self.signal_log.emit("Erreur: Ports invalides.")
 
-    def processus_envoi(self, message, ip_dest, port_dest, nb_sauts, master_ip, master_port):
+    def processus_envoi(self, message, ip_dest, port_dest, nb_sauts, master_ip, master_port, tentative=1):
         # Construction de l'oignon et chiffrement en couches
         try:
-            self.signal_log.emit("Construction du circuit...")
+            self.signal_log.emit(f"Construction du circuit (Tentative {tentative})...")
 
             # On récupère la liste à jour
             routeurs = self.get_liste_routeurs(master_ip, master_port)
@@ -252,6 +260,12 @@ class ClientWindow(QMainWindow):
                 self.signal_log.emit("Erreur: Liste vide")
                 return
 
+            # On met à jour l'interface avec le nombre réel de routeurs actifs
+            self.signal_update_routeurs.emit(len(routeurs))
+
+            if nb_sauts > len(routeurs):
+                self.signal_log.emit(f"Attention: Demandé {nb_sauts} sauts mais seulement {len(routeurs)} actifs. Ajusté à {len(routeurs)}.")
+            
             nb_sauts = min(nb_sauts, len(routeurs))
 
             # Choix aléatoire du circuit
@@ -283,19 +297,41 @@ class ClientWindow(QMainWindow):
                 crypto = CryptoSym(cle=circuit[i][2])
                 paquet = crypto.chiffrer(texte_clair).decode("latin1")
 
-            # 4. Envoi au premier routeur
+            # Envoi au premier routeur
             first = circuit[0]
             self.signal_log.emit(f"Envoi vers {first[0]}:{first[1]}...")
 
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.connect((first[0], first[1]))
-            s.sendall(paquet.encode("latin1"))
-            s.close()
-
-            self.signal_log.emit("Message envoyé !")
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.connect((first[0], first[1]))
+                s.sendall(paquet.encode("latin1"))
+                s.close()
+                self.signal_log.emit("Message envoyé !")
+            except ConnectionRefusedError:
+                self.signal_log.emit(f"Échec connexion {first[0]}:{first[1]}")
+                self.signaler_panne_au_master(first[0], first[1], master_ip, master_port)
+                
+                if tentative < 2:
+                    self.signal_log.emit(">> Routeur signalé HS. Nouvelle tentative avec un nouveau chemin...")
+                    # On attend un tout petit peu que le Master mette à jour la BDD
+                    import time
+                    time.sleep(0.5)
+                    self.processus_envoi(message, ip_dest, port_dest, nb_sauts, master_ip, master_port, tentative=2)
+                else:
+                    self.signal_log.emit("Échec définitif après 2 tentatives.")
 
         except Exception as e:
             self.signal_log.emit(f"Erreur envoi: {e}")
+
+    def signaler_panne_au_master(self, ip_hs, port_hs, ip_master, port_master):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.connect((ip_master, port_master))
+            msg = f"REPORT_DOWN;{ip_hs};{port_hs}"
+            s.send(msg.encode("latin1"))
+            s.close()
+        except:
+            pass
 
 
 if __name__ == "__main__":
