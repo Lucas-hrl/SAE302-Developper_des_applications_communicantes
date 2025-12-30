@@ -1,6 +1,7 @@
 # Routage en oignon distribué
 
 Projet de SAE (BUT RT) visant à mettre en place une architecture distribuée avec routage en oignon : un client A envoie un message à un client B de façon anonyme via une chaîne de routeurs. 
+
 Une vidéo de démonstration du projet est disponible via ce lien : https://youtu.be/wlzfgyH6P2k
 
 ## 1. Contenu du dépôt
