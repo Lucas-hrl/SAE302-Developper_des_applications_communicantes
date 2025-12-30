@@ -12,7 +12,6 @@
 1. [Architecture du Système](#architecture)
 2. [Déploiement Multi-Machines](#multi-machines)
 3. [Scénarios de Test](#scenarios)
-4. [Monitoring et Logs](#monitoring)
 
 ---
 
@@ -249,45 +248,4 @@ python client.py
 Les deux clients reçoivent les messages mutuellement, chacun via un chemin d'oignon différent.
 
 ---
-
-## 4. Monitoring et Logs {#monitoring}
-
-### 4.1 Consultation des Logs
-
-#### Logs Master (Interface)
-
-Cliquer sur **Onglet "Logs"** :
-```
-[12:45:30] Serveur lancé sur port 9016
-[12:45:35] Routeur 127.0.0.1:8000 enregistré (clé: a7f2b9c...)
-[12:45:36] Routeur 127.0.0.1:8001 enregistré
-[12:45:37] Routeur 127.0.0.1:8002 enregistré
-[12:46:15] Client 127.0.0.1:6016 demande les routeurs
-[12:46:20] Message routé : Client → R1 → R2 → R3 → Client
-[12:47:05] Routeur 127.0.0.1:8001 timeout - Statut DOWN
-```
-
-#### Logs Routeur (Terminal)
-
-```
-[Routeur 8000] Clé générée : a7f2b9c1e4d6...
-[Routeur 8000] Connexion établie avec Master 127.0.0.1:9016
-[Routeur 8000] Enregistrement envoyé
-[Routeur 8000] En écoute sur le port 8000
-[Routeur 8000] Message reçu de 127.0.0.1:6016
-[Routeur 8000] Déchiffrement couche 1 - Prochain : 127.0.0.1:8001
-[Routeur 8000] Transfert du paquet vers 127.0.0.1:8001
-```
-
-#### Logs Client (Interface)
-
-```
-[12:46:15] Tentative de connexion au Master 127.0.0.1:9016
-[12:46:16] Connecté au Master
-[12:46:16] 3 routeurs reçus
-[12:46:20] Serveur local lancé sur 127.0.0.1:6016
-[12:46:45] Construction de l'oignon (3 couches)
-[12:46:45] Message envoyé à 127.0.0.1:8000
-[12:46:47] [REÇU] Message de 127.0.0.1:6016 : Test Message
-```
 
